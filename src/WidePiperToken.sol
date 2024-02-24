@@ -31,7 +31,7 @@ contract WidePiperToken is ERC20, ERC20Burnable, Ownable, ERC20Permit {
         super.burn(_amount);
     }
 
-    function mint(address to, uint256 amount) public {
+    function mint(address to, uint256 amount) external {
         require(msg.sender==admin, "WidePiper Token:Unauthorized sender");
         _mint(to, amount);
     }
