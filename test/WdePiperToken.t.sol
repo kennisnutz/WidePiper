@@ -36,7 +36,7 @@ contract WidePiperTokenTest is Test {
         uint256 transferAmount = 100000 * 10 ** 18;
         widePiperToken.transfer(recipient1, transferAmount);
         assertEq(widePiperToken.balanceOf(recipient1), transferAmount);
-    }  
+    }
 
     function test_Minting() public {
         uint256 mintAmount = 100000 * 10 ** widePiperToken.decimals();

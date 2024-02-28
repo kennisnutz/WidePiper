@@ -24,7 +24,7 @@ contract AssetManager is Ownable {
     using Math for uint112;
     using Math for uint8;
 
-    Counters.Counter private _nodeId;
+    Counters.Counter private _nodeCount;
     Counters.Counter private _currentBlockNo;
 
     IWidePiperTokenInterface private widePiperTokenContract;
@@ -41,14 +41,20 @@ contract AssetManager is Ownable {
     address public widePiperTokenAddress;
     address public wethAddress;
 
-    address public tonWidepiperPoolAddress;
-    address public ethWidepiperPoolAddress;
+    address private tonWidepiperPoolAddress;
+    address private ethWidepiperPoolAddress;
     
 
+    uint public currentTonEthPrice;
     //  The time of the next block processing operation
     uint256 public nextBlockTime;
     // the interval between block processing operations
     uint256 public blockInterval= 10 minutes;
+
+    
+
+
+
 
      struct Node {
         uint256 id;
@@ -56,19 +62,37 @@ contract AssetManager is Ownable {
         address owner;
         uint256 risk;
         uint256 reward;
-        uint256 startBlockNo;
-        uint8 rounds;
+       
     }
 
-
-    Node[] private nodes;
-
-
-    enum NodeType {
+     enum NodeType {
         ETH, TON
     }
 
-    constructor(address _toncoinAddress, address _widePiperTokonAddress,address _wethAddress, address _pancakePoolFactory, address _pancakeRouter)Ownable(msg.sender){
+    Node[] private tonNodes;
+    Node[] private ethNodes;
+
+
+
+   
+
+
+    //Modifier
+
+    modifier onlyDuringWagerOpen() {
+        (, uint256 wagerOpenTime) = blockInterval.tryDiv(2); // 5 minutes
+        (,uint256 deadline) = nextBlockTime.trySub(block.timestamp);
+        require(deadline > wagerOpenTime , "Asset Manager: Wagering closed");
+        _;
+    }
+
+    constructor (
+        address _toncoinAddress, 
+        address _widePiperTokonAddress,
+        address _wethAddress, 
+        address _pancakePoolFactory, 
+        address _pancakeRouter
+    )Ownable(msg.sender){
         nextBlockTime = block.timestamp + blockInterval;
         widePiperTokenContract = IWidePiperTokenInterface(_widePiperTokonAddress);
         wethAddress = wethAddress;
@@ -81,9 +105,10 @@ contract AssetManager is Ownable {
         ethWidepiperPoolAddress = getPool(_widePiperTokonAddress, _wethAddress);
         tonWidePiperPoolContract = IPancakeV2Pair(tonWidepiperPoolAddress);
         ethWidePiperPoolContract = IPancakeV2Pair(ethWidepiperPoolAddress);
-
     }
 
+
+ 
     // @dev function for creating new ton nodes
     // @param uint256 _risk: amount of toncoin to be wagered;
     // @param uint8 _numRounds: number of rounds the wager should be considered;
@@ -91,28 +116,39 @@ contract AssetManager is Ownable {
     // @note  wagering period has to be restricted to only the first five minutes of the current block
     // so that users cannot simply create nodes seconds before the processing operation is commenced
 
-    function createNode(uint256 _risk, uint8 _numRounds, address _owner, NodeType _nodeType) public {
-        // ensure user sends enough ton coin to cover the risk
-        //revert if current time minus next block time is less than 5 minutes
+    function createTonNode(uint256 _risk,  address _owner) external onlyDuringWagerOpen {                
         // mint new widepiper tokens and pair with half the deposited tokens
-        if(_nodeType == NodeType.TON){
+            require(toncoinContract.balanceOf(msg.sender) >= _risk, "Asset Manager: Insufficient  ton balance to cover risk");
+              Node memory newNode = Node(
+                _nodeCount.current(),
+                NodeType.TON,
+                _owner,
+                _risk,
+                0
+            );
+
+            toncoinContract.transferFrom(msg.sender, address(this),  newNode.risk);          
+            
             // calculate amount of new widepiper tokens to mint;
             // how many widepiper tokens should be paired with _risk.tryDiv(2)?
-            (, uint256 tonAmount)= _risk.tryDiv(2);
+            
+            (, uint256 tonAmount)= newNode.risk.tryDiv(2);
             (,uint256 tonSlippage)=tonAmount.tryDiv(100);// 1% slippage
             (,uint256 minTonAmount)= tonAmount.trySub(tonSlippage);
             (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)=   tonWidePiperPoolContract.getReserves();
             // if reserve0==0 | reserve1== 0: use the initial price to calculate number of tokens to mint
             //else:
-            uint widepiperTokensToMintAmt=  pancakeRouterContract.quote(tonAmount, uint(reserve0), uint(reserve1));
+            uint widepiperTokensToMintAmt=  pancakeRouterContract.quote(tonAmount, uint(reserve1), uint(reserve0));
             (, uint256 widepiperSlippage)=widepiperTokensToMintAmt.tryDiv(100);
             (,uint minWidepiperTokensToMintAmt)= widepiperTokensToMintAmt.trySub(widepiperSlippage);
             (,uint deadline)= uint(blockTimestampLast).tryAdd(1 minutes);
             //mint required amount of widepiper tokens
             widePiperTokenContract.mint(address(this), widepiperTokensToMintAmt);
-            //*** approve widepiperTokens to pair contract
-            //*** approve weth to pair contract
+            
             // add minted tokens with _risk.tryDiv(2) to ton-widePiper lp address
+            widePiperTokenContract.approve(address(pancakeRouterContract), widepiperTokensToMintAmt);
+            toncoinContract.approve(address(pancakeRouterContract), tonAmount);
+            
             pancakeRouterContract.addLiquidity(
                     toncoinAddress,
                     widePiperTokenAddress,
@@ -123,69 +159,87 @@ contract AssetManager is Ownable {
                     address(this),
                     deadline
             );
+        // create and store new node a new TonNode with the given parameters
+        
+       
+        tonNodes.push(newNode);
+        _nodeCount.increment();    
+        
+    }
 
 
+    function createEthNode(uint256 _risk,  address _owner) payable external {
+        require(msg.value >= _risk, "Asset Manager: Insufficient eth balance to cover risk");
+        _createEthNode(_risk, _owner);
+    }
 
-        }
-        if(_nodeType == NodeType.ETH){
-            // calculate amount of new widepiper tokens to mint;
-             // how many widepiper tokens should be paired with _risk.tryDiv(2)?
-            (, uint256 wethAmount)= _risk.tryDiv(2);
-            (,uint256 wethSlippage)=wethAmount.tryDiv(100);// 1% slippage
-            (,uint256 minWethAmount)= wethAmount.trySub(wethSlippage);
-            (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)=   ethWidePiperPoolContract.getReserves();
-            // if reserve0==0 | reserve1== 0: use the initial price to calculate number of tokens to mint
-            //else:
-            uint widepiperTokensToMintAmt=  pancakeRouterContract.quote(wethAmount, uint(reserve0), uint(reserve1));
-            (, uint256 widepiperSlippage)=widepiperTokensToMintAmt.tryDiv(100);
-            (,uint minWidepiperTokensToMintAmt)= widepiperTokensToMintAmt.trySub(widepiperSlippage);
-            (,uint deadline)= uint(blockTimestampLast).tryAdd(1 minutes);
-            //mint required amount of widepiper tokens
-            widePiperTokenContract.mint(address(this), widepiperTokensToMintAmt);
-            //*** approve widepiperTokens to pair contract
-            //*** approve weth to pair contract
-            // add minted tokens with _risk.tryDiv(2) to ton-widePiper lp address
-            pancakeRouterContract.addLiquidityETH(                   
-                    widePiperTokenAddress,                    
-                    widepiperTokensToMintAmt,                    
-                    minWidepiperTokensToMintAmt,
-                    uint(minWethAmount),
-                    address(this),
-                    deadline
-            );
-            // add minted tokens with _risk.tryDiv(2) to eth-widePiper lp address
+    function _createEthNode(uint256 _risk,  address _owner) private {     
+
+        // calculate amount of new widepiper tokens to mint;
+        // how many widepiper tokens should be paired with _risk.tryDiv(2)?
+        (, uint256 wethAmount)= msg.value.tryDiv(2);
+        (,uint256 wethSlippage)=wethAmount.tryDiv(100);// 1% slippage
+        (,uint256 minWethAmount)= wethAmount.trySub(wethSlippage);
+        (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast) =   ethWidePiperPoolContract.getReserves();
+        
+        uint widepiperTokensToMintAmt=  pancakeRouterContract.quote(wethAmount, uint(reserve1), uint(reserve0));
+        (, uint256 widepiperSlippage)=widepiperTokensToMintAmt.tryDiv(100);
+        (,uint minWidepiperTokensToMintAmt)= widepiperTokensToMintAmt.trySub(widepiperSlippage);
+        (,uint deadline)= uint(blockTimestampLast).tryAdd(1 minutes);
+
+        //mint required amount of widepiper tokens
+        widePiperTokenContract.mint(address(this), widepiperTokensToMintAmt);
+        
+        // add minted tokens with _risk.tryDiv(2) to ton-widePiper lp address
+        widePiperTokenContract.approve(address(pancakeRouterContract), widepiperTokensToMintAmt);            
+
+        (bool success,)= payable(address(pancakeRouterContract)).call{value: msg.value}(
+            abi.encodeWithSignature(
+                "addLiquidityETH(address,uint256,uint256,uint256,address,uint256)",
+                widePiperTokenAddress,                    
+                widepiperTokensToMintAmt,                    
+                minWidepiperTokensToMintAmt,
+                uint(minWethAmount),
+                address(this),
+                deadline
+            )
+        );            
+        require(success, "Asset Manager: Failed to add Liquidity");           
             
-        }
+        
 
         // create and store new node a new TonNode with the given parameters
          Node memory newNode = Node(
-            _nodeId.current(),
-            _nodeType,
+            _nodeCount.current(),
+            NodeType.ETH,
             _owner,
             _risk,
-            0,
-            _currentBlockNo.current(),
-            _numRounds
+            0
         );
-
-        nodes.push(newNode);
-        _nodeId.increment();
-
-        
-
-
+        ethNodes.push(newNode);
+        _nodeCount.increment(); 
     }
+
+   
+
+    receive() external payable {
+         require(msg.value>0, "Asset Manager: Insufficient Eth amount");
+        
+    }
+   
 
     function processBlock() public {
         _currentBlockNo.increment();
+
+
+
+
+        nextBlockTime = block.timestamp + blockInterval;
     }
 
     // private functions
-    function getPool(address _tokenA, address _tokenB) private returns(address){
-        address poolAddress = pancakeFactoryContract.getPair(_tokenA, _tokenB);
-        if(poolAddress == address(0)){
-            poolAddress = pancakeFactoryContract.createPair(_tokenA,_tokenB);
-        }
+    function getPool(address _tokenA, address _tokenB) private view returns(address){
+        address poolAddress = pancakeFactoryContract.getPair(_tokenA, _tokenB);        
         return poolAddress;
     }
 
@@ -193,6 +247,31 @@ contract AssetManager is Ownable {
     // view/read functions
     function getCurrentBlockNumber() public view returns(uint256){
         return _currentBlockNo.current();
+    }
+
+    function getTonWidepiperPool() public view returns(address){
+        return tonWidepiperPoolAddress;
+    }
+
+    function getEthWidepiperPool() public view returns(address){
+        return ethWidepiperPoolAddress;
+    }
+    
+
+    function getTonNodeCount() public view returns(uint){
+        return tonNodes.length;
+    }
+
+    function getEthNodeCount() public view returns(uint){
+        return ethNodes.length;
+    }
+
+    function getWidePiperEthLpBalance() public view returns(uint contractBalance){
+        contractBalance = ethWidePiperPoolContract.balanceOf(address(this));
+    }
+
+    function getWidePiperTonLpBalance() public view returns(uint contractBalance){
+        contractBalance = tonWidePiperPoolContract.balanceOf(address(this));
     }
 
 }
