@@ -35,6 +35,7 @@ contract AssetManager is Ownable {
 
     IPancakeV2Pair private tonWidePiperPoolContract;
     IPancakeV2Pair private ethWidePiperPoolContract;
+    IPancakeV2Pair private tonEthPairContract;
     
 
     address public toncoinAddress;
@@ -43,9 +44,10 @@ contract AssetManager is Ownable {
 
     address private tonWidepiperPoolAddress;
     address private ethWidepiperPoolAddress;
+    address private tonEthLpAddress; 
     
 
-    uint public currentTonEthPrice;
+    uint public lastTonEthPrice;
     //  The time of the next block processing operation
     uint256 public nextBlockTime;
     // the interval between block processing operations
@@ -99,13 +101,24 @@ contract AssetManager is Ownable {
         toncoinContract = IERC20(_toncoinAddress);
         pancakeRouterContract= IPancakeRouter01(_pancakeRouter);
         pancakeFactoryContract = IPancakeFactory(_pancakePoolFactory);
+        tonEthLpAddress =  pancakeFactoryContract.getPair(_toncoinAddress, _wethAddress);
         toncoinAddress = _toncoinAddress;
         widePiperTokenAddress = _widePiperTokonAddress;
         tonWidepiperPoolAddress = getPool(_toncoinAddress,_widePiperTokonAddress);
         ethWidepiperPoolAddress = getPool(_widePiperTokonAddress, _wethAddress);
         tonWidePiperPoolContract = IPancakeV2Pair(tonWidepiperPoolAddress);
         ethWidePiperPoolContract = IPancakeV2Pair(ethWidepiperPoolAddress);
+        tonEthPairContract = IPancakeV2Pair(tonEthLpAddress);
+        lastTonEthPrice = getTonEthPrice();
+
     }
+
+
+    receive() external payable {
+         require(msg.value>0, "Asset Manager: Insufficient Eth amount");
+        
+    }
+   
 
 
  
@@ -173,6 +186,23 @@ contract AssetManager is Ownable {
         _createEthNode(_risk, _owner);
     }
 
+    
+   
+
+    /// @dev function for processing nodes; 
+    /// Will be called at 10 minute intervals and implements the distribuition logic
+    /// 1. get tonEth price
+
+    function processBlock() public {
+        _currentBlockNo.increment();
+        
+        nextBlockTime = block.timestamp + blockInterval;
+    }
+
+
+
+
+    // private  functions   
     function _createEthNode(uint256 _risk,  address _owner) private {     
 
         // calculate amount of new widepiper tokens to mint;
@@ -220,31 +250,25 @@ contract AssetManager is Ownable {
         _nodeCount.increment(); 
     }
 
-   
-
-    receive() external payable {
-         require(msg.value>0, "Asset Manager: Insufficient Eth amount");
-        
-    }
-   
-
-    function processBlock() public {
-        _currentBlockNo.increment();
 
 
 
 
-        nextBlockTime = block.timestamp + blockInterval;
-    }
-
-    // private functions
-    function getPool(address _tokenA, address _tokenB) private view returns(address){
-        address poolAddress = pancakeFactoryContract.getPair(_tokenA, _tokenB);        
-        return poolAddress;
-    }
 
 
     // view/read functions
+
+     function getPool(address _tokenA, address _tokenB) public view returns(address){
+        address poolAddress = pancakeFactoryContract.getPair(toncoinAddress, wethAddress);               
+        return poolAddress;
+    }
+
+    function getTonEthPrice() public view returns (uint){       
+         (uint112 tonReserve, uint112 ethReserve, uint32 blockTimestampLast)=   tonEthPairContract.getReserves();
+          uint ethPriceOf1Ton =  pancakeRouterContract.quote(1 * 10 ** 9, uint(tonReserve), uint(ethReserve));
+         return ethPriceOf1Ton;
+    }
+
     function getCurrentBlockNumber() public view returns(uint256){
         return _currentBlockNo.current();
     }
